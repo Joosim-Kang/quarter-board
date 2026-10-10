@@ -25,6 +25,36 @@ const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const SEC = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
 const CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+// 앱 설치에 필요한 파일들. 이 목록에 있는 것만 내려줘요.
+const STATIC = {
+  '/sw.js': { file: 'sw.js', type: 'application/javascript; charset=utf-8', cache: 'no-cache' },
+  '/icon-192.png': { file: 'icon-192.png', type: 'image/png', cache: 'public, max-age=86400' },
+  '/icon-512.png': { file: 'icon-512.png', type: 'image/png', cache: 'public, max-age=86400' },
+  '/apple-touch-icon.png': { file: 'apple-touch-icon.png', type: 'image/png', cache: 'public, max-age=86400' },
+};
+
+// 방마다 시작 주소가 다른 설치 설정. 홈 화면 아이콘을 누르면 그 방이 바로 열려요.
+function manifestFor(code, view) {
+  const start = code ? '/r/' + code + (view ? '?view=1' : '') : '/';
+  return {
+    id: start,
+    name: '3팀 쿼터 점수판',
+    short_name: '점수판',
+    description: '로그인 없이 여럿이 같이 보고 입력하는 3팀 쿼터 점수판',
+    lang: 'ko',
+    start_url: start,
+    scope: '/',
+    display: 'standalone',
+    orientation: 'portrait',
+    background_color: '#EDF0F3',
+    theme_color: '#1D4ED8',
+    icons: [
+      { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+    ],
+  };
+}
+
 /** code -> { state, clients:Set<ServerResponse>, seen:number } */
 const rooms = new Map();
 
@@ -34,7 +64,8 @@ function validOrder(o) { return Array.isArray(o) && o.length === 3 && [0, 1, 2].
 function validFirst(f) { return Array.isArray(f) && f.length === 3 && f.every((t, p) => PAIRS[p].includes(t)); }
 
 function freshState() {
-  return { names: DEF_NAMES.slice(), quarters: 4, order: [0, 1, 2], first: [0, 0, 1], started: false, scores: [], gen: 0, v: 1, updatedAt: Date.now() };
+  // first: 1쿼터 선공 팀, left: 1쿼터에 코트 왼쪽에 있는 팀 (둘 다 경기 순서 0,1,2 = 1vs2, 1vs3, 2vs3 기준)
+  return { names: DEF_NAMES.slice(), quarters: 4, order: [0, 1, 2], first: [0, 0, 1], left: [0, 0, 1], started: false, scores: [], gen: 0, v: 1, updatedAt: Date.now() };
 }
 
 // 파일이나 클라이언트에서 온 값은 믿지 않고 항상 이 함수로 걸러요.
@@ -45,6 +76,7 @@ function sanitize(o) {
   if (isInt(o.quarters, 1, 6)) s.quarters = o.quarters;
   if (validOrder(o.order)) s.order = o.order.slice();
   if (validFirst(o.first)) s.first = o.first.slice();
+  if (validFirst(o.left)) s.left = o.left.slice(); // 예전 방에는 없는 값이라 없으면 기본값을 써요
   s.started = !!o.started;
   if (Array.isArray(o.scores)) {
     for (const p of o.scores) {
@@ -85,6 +117,10 @@ function apply(s, a) {
       if ('first' in p) {
         if (!validFirst(p.first)) return bad(400, '선공 설정이 올바르지 않아요.');
         s.first = p.first.slice();
+      }
+      if ('left' in p) {
+        if (!validFirst(p.left)) return bad(400, '코트 위치 설정이 올바르지 않아요.');
+        s.left = p.left.slice();
       }
       return null;
     }
@@ -193,10 +229,20 @@ function sendJson(res, status, obj) {
   res.end(body);
 }
 
-function sendIndex(res) {
-  fs.readFile(INDEX_FILE, (err, buf) => {
+function sendIndex(res, code, view) {
+  fs.readFile(INDEX_FILE, 'utf8', (err, html) => {
     if (err) { res.writeHead(500, SEC); res.end('index.html을 찾을 수 없어요.'); return; }
+    // 방 주소로 들어오면, 설치 설정도 그 방용으로 바꿔서 내려줘요.
+    if (code) html = html.replace('href="/manifest.webmanifest"', 'href="/manifest.webmanifest?r=' + code + (view ? '&amp;v=1' : '') + '"');
     res.writeHead(200, Object.assign({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'Content-Security-Policy': CSP }, SEC));
+    res.end(html);
+  });
+}
+
+function sendStatic(res, item) {
+  fs.readFile(path.join(__dirname, 'public', item.file), (err, buf) => {
+    if (err) { res.writeHead(404, SEC); res.end('Not found'); return; }
+    res.writeHead(200, Object.assign({ 'Content-Type': item.type, 'Cache-Control': item.cache }, SEC));
     res.end(buf);
   });
 }
@@ -258,7 +304,20 @@ const server = http.createServer(async (req, res) => {
     const method = req.method;
 
     if (method === 'GET' && url.pathname === '/healthz') { res.writeHead(200, SEC); res.end('ok'); return; }
-    if (method === 'GET' && (parts.length === 0 || (parts[0] === 'r' && parts.length === 2))) { sendIndex(res); return; }
+    if (method === 'GET' && parts.length === 0) { sendIndex(res); return; }
+    if (method === 'GET' && parts[0] === 'r' && parts.length === 2) {
+      const rc = String(parts[1]).toUpperCase();
+      sendIndex(res, CODE_RE.test(rc) ? rc : null, url.searchParams.get('view') === '1');
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/manifest.webmanifest') {
+      const rc = String(url.searchParams.get('r') || '').toUpperCase();
+      const body = JSON.stringify(manifestFor(CODE_RE.test(rc) ? rc : null, url.searchParams.get('v') === '1'));
+      res.writeHead(200, Object.assign({ 'Content-Type': 'application/manifest+json; charset=utf-8', 'Cache-Control': 'no-cache' }, SEC));
+      res.end(body);
+      return;
+    }
+    if (method === 'GET' && Object.prototype.hasOwnProperty.call(STATIC, url.pathname)) { sendStatic(res, STATIC[url.pathname]); return; }
 
     if (parts[0] === 'api' && parts[1] === 'rooms') {
       if (parts.length === 2 && method === 'POST') {

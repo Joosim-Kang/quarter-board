@@ -4,8 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#1D4ED8">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="점수판">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>3팀 쿼터 점수판</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231D4ED8'/%3E%3Ctext x='16' y='23' font-size='20' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='white'%3E3%3C/text%3E%3C/svg%3E">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap">
@@ -83,6 +90,8 @@ select{width:auto;min-width:96px}
 .seg-toggle button{min-height:36px;padding:0 14px;border:0;background:var(--surface);cursor:pointer}
 .seg-toggle button+button{border-inline-start:1px solid var(--line)}
 .seg-toggle button[aria-pressed="true"]{background:var(--hot);color:var(--hot-ink);font-weight:700}
+.seg-toggle.side button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+.swap{margin:0;padding:8px 12px;border-radius:8px;background:var(--soft);border:1px solid var(--accent);font-weight:700;font-size:.88rem;text-align:center}
 
 .prog{display:grid;gap:6px}
 .pg{display:flex;gap:10px}
@@ -168,16 +177,29 @@ td.empty{color:var(--line)}
   /* ---------- 서버와 주고받기 ---------- */
   function saveLocal(){ try{localStorage.setItem('qb-room-'+CODE,JSON.stringify(S));}catch(e){} }
   function loadLocal(){ try{var r=localStorage.getItem('qb-room-'+CODE); return r?JSON.parse(r):null;}catch(e){return null;} }
+  // 앱 아이콘이나 처음 주소로 다시 열었을 때 "최근에 연 방"으로 바로 이어갈 수 있게 기억해 둬요.
+  function saveLastRoom(){ try{localStorage.setItem('qb-last-room',JSON.stringify({code:CODE,view:VIEW_ONLY,t:Date.now()}));}catch(e){} }
+  function lastRoom(){
+    try{
+      var o=JSON.parse(localStorage.getItem('qb-last-room')||'null');
+      if(o&&/^[A-Z0-9]{4,8}$/.test(o.code)&&Date.now()-o.t<48*3600*1000) return o;
+    }catch(e){}
+    return null;
+  }
 
   function okState(st){
     return st&&typeof st==='object'&&Array.isArray(st.names)&&Array.isArray(st.scores)&&Array.isArray(st.order)&&Array.isArray(st.first)&&typeof st.v==='number';
   }
   function accept(st){
     if(!okState(st)) return;
+    if(!Array.isArray(st.left)||st.left.length!==3) st.left=[0,0,1]; // 예전 방에는 코트 위치가 없어서 기본값(번호 낮은 팀이 왼쪽)을 써요
     if(S&&st.v<S.v) return;
     var changed=(!S||st.v!==S.v||phase!=='room');
-    S=st; phase='room'; saveLocal();
+    // 내가 점수를 치던 경기를 다른 사람이 먼저 입력해서 화면이 넘어가면, 숫자가 사라진 이유를 알려 줘요.
+    var lostDraft=!!(S&&!sending&&draft.key===stepKey()&&(draft.a||draft.b)&&st.gen===S.gen&&st.scores.length>S.scores.length);
+    S=st; phase='room'; saveLocal(); saveLastRoom();
     if(changed) render();
+    if(lostDraft) flash('다른 사람이 이 경기 점수를 먼저 입력해서 다음 경기로 넘어갔어요. 입력하던 숫자는 지워졌어요.');
   }
   function post(path,body){
     return fetch('/api/rooms/'+CODE+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
@@ -257,7 +279,10 @@ td.empty{color:var(--line)}
   }
 
   function landingView(){
-    return '<section class="panel"><div><div class="eyebrow">시작하기</div><h2 style="margin-top:6px">점수판 방 만들기</h2>'+
+    var lr=lastRoom();
+    var recent=lr?'<section class="panel"><div class="rowend"><div><div class="eyebrow">최근에 연 방</div><div class="code" style="font-size:1.8rem">'+esc(lr.code)+'</div></div>'+
+      '<button class="btn primary" data-act="open-recent" data-code="'+esc(lr.code)+'" data-view="'+(lr.view?'1':'0')+'">이어서 열기</button></div></section>':'';
+    return recent+'<section class="panel"><div><div class="eyebrow">시작하기</div><h2 style="margin-top:6px">점수판 방 만들기</h2>'+
       '<p class="note" style="margin-top:6px">방을 만들면 링크가 생겨요. 링크를 받은 사람은 로그인 없이 같이 보고 입력할 수 있어요.</p></div>'+
       '<button class="btn primary big" data-act="create">새 게임 만들기</button></section>'+
       '<section class="panel"><div class="eyebrow">이미 만든 방이 있다면</div>'+
@@ -274,7 +299,8 @@ td.empty{color:var(--line)}
     var box=ui.showCopyBox?'<input class="linkbox" id="linkbox" readonly value="'+esc(ui.linkText)+'" aria-label="복사할 링크">':'';
     return '<section class="panel"><div class="rowend"><div><div class="eyebrow">방 코드</div><div class="code">'+esc(CODE)+'</div></div>'+
       '<div class="row"><button class="btn" data-act="copy-link">링크 복사</button><button class="btn" data-act="copy-view">보기 전용 링크 복사</button></div></div>'+box+
-      '<p class="note" id="cmsg" aria-live="polite">'+(esc(ui.copyMsg)||'링크를 받은 사람은 로그인 없이 같이 입력할 수 있어요. 보기 전용 링크는 입력창만 숨겨 주는 편의 기능이에요.')+'</p></section>';
+      '<p class="note" id="cmsg" aria-live="polite">'+(esc(ui.copyMsg)||'링크를 받은 사람은 로그인 없이 같이 입력할 수 있어요. 보기 전용 링크는 입력창만 숨겨 주는 편의 기능이에요.')+'</p>'+
+      '<p class="note">폰 브라우저 메뉴의 "홈 화면에 추가"를 누르면 앱처럼 설치돼요. 아이콘을 누르면 이 방이 바로 열려요.</p></section>';
   }
 
   function setupView(){
@@ -294,10 +320,14 @@ td.empty{color:var(--line)}
         '<span class="firstline"><span class="lbl">1쿼터 선공</span><span class="seg-toggle" role="group" aria-label="1쿼터 선공 팀">'+
           '<button data-act="first" data-p="'+p+'" data-t="'+a+'" aria-pressed="'+(S.first[p]===a)+'">'+nm(a)+'</button>'+
           '<button data-act="first" data-p="'+p+'" data-t="'+b+'" aria-pressed="'+(S.first[p]===b)+'">'+nm(b)+'</button>'+
+        '</span></span>'+
+        '<span class="firstline"><span class="lbl">1쿼터 왼쪽 팀</span><span class="seg-toggle side" role="group" aria-label="1쿼터 코트 왼쪽 팀">'+
+          '<button data-act="left" data-p="'+p+'" data-t="'+a+'" aria-pressed="'+(S.left[p]===a)+'">'+nm(a)+'</button>'+
+          '<button data-act="left" data-p="'+p+'" data-t="'+b+'" aria-pressed="'+(S.left[p]===b)+'">'+nm(b)+'</button>'+
         '</span></span></li>';
     }).join('');
     return '<section class="panel">'+
-      '<div><div class="eyebrow">게임 설정</div><p class="note" style="margin-top:6px">팀 이름과 경기 순서, 1쿼터 선공을 정하면 바로 시작해요. 같은 두 팀이 다시 붙을 때마다 선공이 바뀌어요. 설정은 같은 방에 들어온 모든 사람에게 바로 보여요.</p></div>'+
+      '<div><div class="eyebrow">게임 설정</div><p class="note" style="margin-top:6px">팀 이름과 경기 순서, 1쿼터 선공, 1쿼터에 코트 왼쪽에 서는 팀을 정하면 바로 시작해요. 같은 두 팀이 다시 붙을 때마다 선공이 바뀌고, 3쿼터부터는 코트 체인지로 왼쪽과 오른쪽이 바뀌어요. 점수는 왼쪽 팀 점수를 먼저 입력해요. 설정은 같은 방에 들어온 모든 사람에게 바로 보여요.</p></div>'+
       '<div class="field"><span class="lbl">팀 이름</span><div class="names">'+names+'</div></div>'+
       '<div class="field"><label class="lbl" for="qn">쿼터 수</label><div><select id="qn">'+qopts+'</select></div></div>'+
       '<div class="field"><span class="lbl">경기 순서 (한 쿼터 안에서 위에서부터 진행)</span><ol class="order">'+rows+'</ol></div>'+
@@ -305,11 +335,24 @@ td.empty{color:var(--line)}
     '</section>';
   }
 
+  // 코트 위치: 1·2쿼터는 설정한 왼쪽 팀, 3쿼터부터는 코트 체인지로 좌우가 바뀌어요.
+  function sidesFor(p,q){
+    var a=PAIRS[p][0], b=PAIRS[p][1];
+    var base=(S.left&&PAIRS[p].indexOf(S.left[p])>=0)?S.left[p]:a;
+    var other=(base===a)?b:a;
+    var L=(q>=2)?other:base;
+    return {L:L,R:(L===a)?b:a};
+  }
+  // 저장은 늘 [번호 낮은 팀 점수, 번호 높은 팀 점수]로 해요. 입력은 [왼쪽 점수, 오른쪽 점수] 순서예요.
+  function canon(p,q,vL,vR){ return (sidesFor(p,q).L===PAIRS[p][0])?[vL,vR]:[vR,vL]; }
+  function scoreOf(p,pair,team){ return (team===PAIRS[p][0])?pair[0]:pair[1]; }
+
   function info(step){
     var q=Math.floor(step/3), pos=step%3, p=S.order[pos], a=PAIRS[p][0], b=PAIRS[p][1];
     var base=S.first[p];
     var att=(q%2===0)?base:(base===a?b:a);
-    return {q:q,pos:pos,p:p,a:a,b:b,att:att};
+    var sd=sidesFor(p,q);
+    return {q:q,pos:pos,p:p,a:a,b:b,att:att,L:sd.L,R:sd.R};
   }
 
   function progressView(step){
@@ -329,11 +372,12 @@ td.empty{color:var(--line)}
       var first=(t===I.att);
       var field=ro?'':
         '<span class="lbl">이번 쿼터 종료 점수</span>'+
-        '<input class="score" id="'+(k?'sb':'sa')+'" inputmode="numeric" autocomplete="off" maxlength="4" value="'+esc(useDraft?(k?draft.b:draft.a):'')+'" aria-label="'+esc(dn(t))+' 이번 쿼터 종료 점수">';
+        '<input class="score" id="'+(k?'sb':'sa')+'" inputmode="numeric" autocomplete="off" maxlength="'+(k?4:12)+'" value="'+esc(useDraft?(k?draft.b:draft.a):'')+'" aria-label="'+esc(dn(t))+' 이번 쿼터 종료 점수">';
       return '<div class="team'+(first?' first':'')+'">'+
+        '<span class="lbl">'+(k?'오른쪽':'왼쪽')+'</span>'+
         '<div class="tname">'+nm(t)+'</div>'+
         '<span class="pill'+(first?' first':'')+'">'+(first?'선공':'후공')+'</span>'+
-        '<div class="prev"><span class="lbl">직전 쿼터 점수</span><span class="digits">'+(prev?prev[k]:'—')+'</span></div>'+
+        '<div class="prev"><span class="lbl">직전 쿼터 점수</span><span class="digits">'+(prev?scoreOf(I.p,prev,t):'—')+'</span></div>'+
         field+
       '</div>';
     }
@@ -341,10 +385,11 @@ td.empty{color:var(--line)}
       ? '<p class="note">보기 전용이에요. 점수가 들어오면 이 화면이 바로 바뀌어요.</p>'
       : '<p class="err" id="err" role="alert" hidden></p>'+
         '<button class="btn primary big" data-act="submit">'+(last?'점수 입력하고 마치기':'점수 입력하고 다음 경기로')+'</button>'+
-        '<div class="rowend"><button class="btn ghost" data-act="undo"'+(step===0?' disabled':'')+'>직전 입력 취소</button><span class="hint">숫자 두 개를 "10 9"처럼 붙여 넣어도 돼요</span></div>';
+        '<div class="rowend"><button class="btn ghost" data-act="undo"'+(step===0?' disabled':'')+'>직전 입력 취소</button><span class="hint">왼쪽 팀 점수 먼저, "10 9"처럼 붙여 넣어도 돼요</span></div>';
     return '<section class="panel">'+
       '<div><div class="eyebrow">'+(I.q+1)+'쿼터 · '+(I.pos+1)+'번째 경기</div><h2>'+vs(I.p)+'</h2></div>'+
-      '<div class="teams">'+col(I.a,0)+col(I.b,1)+'</div>'+foot+
+      (I.q===2?'<p class="swap">코트 체인지 · 지난 쿼터와 왼쪽, 오른쪽이 바뀌었어요</p>':'')+
+      '<div class="teams">'+col(I.L,0)+col(I.R,1)+'</div>'+foot+
     '</section>';
   }
 
@@ -387,7 +432,7 @@ td.empty{color:var(--line)}
       }
       return '<tr><th scope="row">'+vs(p)+'</th>'+tds+'</tr>';
     }).join('');
-    return '<section class="panel"><div class="eyebrow">쿼터별 점수</div><div class="scroll"><table class="mx"><thead><tr>'+th+'</tr></thead><tbody>'+body+'</tbody></table></div>'+(ro?'':'<p class="note">입력한 점수를 누르면 정정할 수 있어요.</p>')+'</section>';
+    return '<section class="panel"><div class="eyebrow">쿼터별 점수</div><div class="scroll"><table class="mx"><thead><tr>'+th+'</tr></thead><tbody>'+body+'</tbody></table></div><p class="note">표의 점수는 팀 이름 순서(앞 팀 : 뒤 팀)로 보여줘요.'+(ro?'':' 입력한 점수를 누르면 정정할 수 있어요.')+'</p></section>';
   }
 
   function editView(){
@@ -395,8 +440,8 @@ td.empty{color:var(--line)}
     var d=(draft.e&&draft.e.i===i)?draft.e:null;
     return '<section class="panel" id="editpanel">'+
       '<div><div class="eyebrow">점수 정정 · '+(I.q+1)+'쿼터</div><h2>'+vs(I.p)+'</h2></div>'+
-      '<div class="erow"><label>'+nm(I.a)+'<input class="score" id="ea" inputmode="numeric" autocomplete="off" maxlength="4" value="'+esc(d?d.a:s[0])+'"></label>'+
-      '<label>'+nm(I.b)+'<input class="score" id="eb" inputmode="numeric" autocomplete="off" maxlength="4" value="'+esc(d?d.b:s[1])+'"></label></div>'+
+      '<div class="erow"><label><span class="lbl">왼쪽</span>'+nm(I.L)+'<input class="score" id="ea" inputmode="numeric" autocomplete="off" maxlength="12" value="'+esc(d?d.a:scoreOf(I.p,s,I.L))+'"></label>'+
+      '<label><span class="lbl">오른쪽</span>'+nm(I.R)+'<input class="score" id="eb" inputmode="numeric" autocomplete="off" maxlength="4" value="'+esc(d?d.b:scoreOf(I.p,s,I.R))+'"></label></div>'+
       '<p class="err" id="err2" role="alert" hidden></p>'+
       '<div class="rowend"><button class="btn primary" data-act="save-edit">저장</button><button class="btn ghost" data-act="cancel-edit">취소</button></div>'+
     '</section>';
@@ -460,8 +505,9 @@ td.empty{color:var(--line)}
     var step=S.scores.length; if(step>=total()) return;
     var pr=readPair('sa','sb');
     if(!pr){showErr('err');return;}
+    var si=info(step), cp=canon(si.p,si.q,pr[0],pr[1]);
     sending=true; focusNext=true;
-    act({type:'score',mode:'enter',i:step,a:pr[0],b:pr[1]}).then(function(res){
+    act({type:'score',mode:'enter',i:step,a:cp[0],b:cp[1]}).then(function(res){
       sending=false;
       if(res&&res.ok){draft={key:'',a:'',b:'',e:null}; ui.copyMsg=''; ui.showCopyBox=false;}
     });
@@ -470,8 +516,8 @@ td.empty{color:var(--line)}
     if(sending) return;
     var pr=readPair('ea','eb');
     if(!pr){showErr('err2');return;}
-    var i=ui.editing; sending=true;
-    act({type:'score',mode:'edit',i:i,a:pr[0],b:pr[1]}).then(function(res){
+    var i=ui.editing, ei=info(i), ecp=canon(ei.p,ei.q,pr[0],pr[1]); sending=true;
+    act({type:'score',mode:'edit',i:i,a:ecp[0],b:ecp[1]}).then(function(res){
       sending=false;
       if(res&&res.ok){draft.e=null; ui.editing=null; render();}
     });
@@ -502,6 +548,11 @@ td.empty{color:var(--line)}
       return;
     }
     if(a==='reload'){location.reload();return;}
+    if(a==='open-recent'){
+      var rc=String(t.dataset.code||'');
+      if(/^[A-Z0-9]{4,8}$/.test(rc)) location.href='/r/'+rc+(t.dataset.view==='1'?'?view=1':'');
+      return;
+    }
     if(phase!=='room'||!S) return;
     if(a==='copy-link'){copyText(roomUrl(false),'링크를 복사했어요.');return;}
     if(a==='copy-view'){copyText(roomUrl(true),'보기 전용 링크를 복사했어요.');return;}
@@ -509,6 +560,7 @@ td.empty{color:var(--line)}
     if(isRO()) return;
     if(a==='start'){ focusNext=true; ui.editing=null; draft={key:'',a:'',b:'',e:null}; act({type:'start'}); }
     else if(a==='first'){var f=S.first.slice(); f[+t.dataset.p]=+t.dataset.t; act({type:'config',patch:{first:f}});}
+    else if(a==='left'){var lf=S.left.slice(); lf[+t.dataset.p]=+t.dataset.t; act({type:'config',patch:{left:lf}});}
     else if(a==='up'||a==='down'){
       var i=+t.dataset.i, j=a==='up'?i-1:i+1; if(j<0||j>2) return;
       var o=S.order.slice(); var tmp=o[i]; o[i]=o[j]; o[j]=tmp; act({type:'config',patch:{order:o}});
@@ -567,6 +619,11 @@ td.empty{color:var(--line)}
   });
 
   boot();
+
+  // 앱으로 설치할 수 있게 하는 서비스 워커 등록
+  if('serviceWorker' in navigator){
+    window.addEventListener('load',function(){ navigator.serviceWorker.register('/sw.js').catch(function(){}); });
+  }
 })();
 </script>
 </body>
