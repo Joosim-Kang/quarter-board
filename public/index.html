@@ -106,10 +106,6 @@ select{width:auto;min-width:96px}
 .teams{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .team{display:grid;gap:8px;justify-items:center;text-align:center;padding:14px 10px;border-radius:8px;background:var(--bg);border:2px solid transparent;min-width:0}
 .team.first{border-color:var(--hot)}
-.dot{display:inline-block;width:.7em;height:.7em;border-radius:50%;margin-right:.35em;vertical-align:baseline}
-.swatches{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
-.sw{width:28px;height:28px;border-radius:50%;border:2px solid var(--line);padding:0;min-height:0;cursor:pointer}
-.sw[aria-pressed="true"]{border-color:var(--ink);box-shadow:0 0 0 2px var(--bg) inset}
 .tname{font-weight:700;font-size:1.15rem;overflow-wrap:anywhere}
 .pill{display:inline-block;padding:2px 12px;border-radius:999px;font-size:.78rem;font-weight:700;border:1px solid var(--line);color:var(--muted)}
 .pill.first{background:var(--hot);border-color:var(--hot);color:var(--hot-ink)}
@@ -151,9 +147,6 @@ td.empty{color:var(--line)}
 (function(){
   var PAIRS=[[0,1],[0,2],[1,2]];
   var DEF=['1팀','2팀','3팀'];
-  var PAL=['#2563EB','#E11D48','#16A34A','#F59E0B','#7C3AED','#0891B2','#EA580C','#475569'];
-  var PALN=['파랑','빨강','초록','노랑','보라','청록','주황','회색'];
-  function colOf(i){var c=(S&&S.colors&&S.colors[i]);return PAL[(c>=0&&c<PAL.length)?c:i]||PAL[i];}
   var root=document.getElementById('app');
 
   var m=location.pathname.match(/^\/r\/([A-Za-z0-9]{4,8})\/?$/);
@@ -169,7 +162,7 @@ td.empty{color:var(--line)}
   function $(s){return document.querySelector(s);}
   function esc(t){return String(t).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function dn(i){return String((S&&S.names[i])||'').trim()||DEF[i];}
-  function nm(i){return '<i class="dot" style="background:'+colOf(i)+'"></i>'+'<span data-nm="'+i+'">'+esc(dn(i))+'</span>';}
+  function nm(i){return '<span data-nm="'+i+'">'+esc(dn(i))+'</span>';}
   function vs(p){return nm(PAIRS[p][0])+' <span class="vs">vs</span> '+nm(PAIRS[p][1]);}
   function total(){return S.quarters*3;}
   function isRO(){return VIEW_ONLY;}
@@ -200,7 +193,6 @@ td.empty{color:var(--line)}
   function accept(st){
     if(!okState(st)) return;
     if(!(st.logo>0)) st.logo=0;
-    if(!Array.isArray(st.colors)||st.colors.length!==3) st.colors=[0,1,2];
     if(!Array.isArray(st.left)||st.left.length!==3) st.left=[0,0,1]; // 예전 방에는 코트 위치가 없어서 기본값(번호 낮은 팀이 왼쪽)을 써요
     if(S&&st.v<S.v) return;
     var changed=(!S||st.v!==S.v||phase!=='room');
@@ -341,7 +333,6 @@ td.empty{color:var(--line)}
     return '<section class="panel">'+
       '<div><div class="eyebrow">게임 설정</div><p class="note" style="margin-top:6px">팀 이름과 경기 순서, 1쿼터 선공, 1쿼터에 코트 왼쪽에 서는 팀을 정하면 바로 시작해요. 같은 두 팀이 다시 붙을 때마다 선공이 바뀌고, 3쿼터부터는 코트 체인지로 왼쪽과 오른쪽이 바뀌어요. 점수는 왼쪽 팀 점수를 먼저 입력해요. 설정은 같은 방에 들어온 모든 사람에게 바로 보여요.</p></div>'+
       '<div class="field"><span class="lbl">팀 이름</span><div class="names">'+names+'</div></div>'+
-      '<div class="field"><span class="lbl">팀 색</span>'+[0,1,2].map(function(i){return '<div class="rowend" style="justify-content:flex-start;gap:10px;margin-top:6px"><span style="min-width:5em">'+nm(i)+'</span><span class="swatches" role="group" aria-label="'+(i+1)+'번 팀 색">'+PAL.map(function(c,ci){return '<button class="sw" data-act="color" data-t="'+i+'" data-c="'+ci+'" aria-pressed="'+(((S.colors&&S.colors[i])||0)===ci)+'" aria-label="'+PALN[ci]+'" style="background:'+c+'"></button>';}).join('')+'</span></div>';}).join('')+'</div>'+
       '<div class="field"><label class="lbl" for="qn">쿼터 수</label><div><select id="qn">'+qopts+'</select></div></div>'+
       '<div class="field"><span class="lbl">경기 순서 (한 쿼터 안에서 위에서부터 진행)</span><ol class="order">'+rows+'</ol></div>'+
       '<button class="btn primary big" data-act="start">시작하기</button>'+
@@ -386,7 +377,7 @@ td.empty{color:var(--line)}
       var field=ro?'':
         '<span class="lbl">이번 쿼터 종료 점수</span>'+
         '<input class="score" id="'+(k?'sb':'sa')+'" inputmode="numeric" autocomplete="off" maxlength="'+(k?4:12)+'" value="'+esc(useDraft?(k?draft.b:draft.a):'')+'" aria-label="'+esc(dn(t))+' 이번 쿼터 종료 점수">';
-      return '<div class="team'+(first?' first':'')+'" style="border-top:5px solid '+colOf(t)+'">'+
+      return '<div class="team'+(first?' first':'')+'">'+
         '<span class="lbl">'+(k?'오른쪽':'왼쪽')+'</span>'+
         '<div class="tname">'+nm(t)+'</div>'+
         '<span class="pill'+(first?' first':'')+'">'+(first?'선공':'후공')+'</span>'+
@@ -574,7 +565,6 @@ td.empty{color:var(--line)}
     if(a==='logo-pick'){var lf=$('#logofile'); if(lf) lf.click(); return;}
     if(a==='logo-clear'){ post('/logo',{data:null}).then(function(r){ if(r&&r.j&&r.j.state) accept(r.j.state); else flash('처리하지 못했어요.'); }); return; }
     if(a==='start'){ focusNext=true; ui.editing=null; draft={key:'',a:'',b:'',e:null}; act({type:'start'}); }
-    else if(a==='color'){var cl=S.colors.slice(); cl[+t.dataset.t]=+t.dataset.c; act({type:'config',patch:{colors:cl}});}
     else if(a==='first'){var f=S.first.slice(); f[+t.dataset.p]=+t.dataset.t; act({type:'config',patch:{first:f}});}
     else if(a==='left'){var lf=S.left.slice(); lf[+t.dataset.p]=+t.dataset.t; act({type:'config',patch:{left:lf}});}
     else if(a==='up'||a==='down'){

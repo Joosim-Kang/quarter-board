@@ -71,11 +71,8 @@ function validFirst(f) { return Array.isArray(f) && f.length === 3 && f.every((t
 
 function freshState() {
   // first: 1쿼터 선공 팀, left: 1쿼터에 코트 왼쪽에 있는 팀 (둘 다 경기 순서 0,1,2 = 1vs2, 1vs3, 2vs3 기준)
-  return { names: DEF_NAMES.slice(), quarters: 4, order: [0, 1, 2], first: [0, 0, 1], left: [0, 0, 1], colors: [0, 1, 2], logo: 0, started: false, scores: [], gen: 0, v: 1, updatedAt: Date.now() };
+  return { names: DEF_NAMES.slice(), quarters: 4, order: [0, 1, 2], first: [0, 0, 1], left: [0, 0, 1], logo: 0, started: false, scores: [], gen: 0, v: 1, updatedAt: Date.now() };
 }
-
-const COLOR_COUNT = 8;
-function validColors(c) { return Array.isArray(c) && c.length === 3 && c.every((x) => Number.isInteger(x) && x >= 0 && x < COLOR_COUNT); }
 
 // 파일이나 클라이언트에서 온 값은 믿지 않고 항상 이 함수로 걸러요.
 function sanitize(o) {
@@ -86,7 +83,6 @@ function sanitize(o) {
   if (validOrder(o.order)) s.order = o.order.slice();
   if (validFirst(o.first)) s.first = o.first.slice();
   if (validFirst(o.left)) s.left = o.left.slice(); // 예전 방에는 없는 값이라 없으면 기본값을 써요
-  if (validColors(o.colors)) s.colors = o.colors.slice();
   s.started = !!o.started;
   if (Array.isArray(o.scores)) {
     for (const p of o.scores) {
@@ -115,10 +111,6 @@ function apply(s, a) {
       if ('names' in p) {
         if (!Array.isArray(p.names) || p.names.length !== 3) return bad(400, '팀 이름이 올바르지 않아요.');
         s.names = p.names.map((x) => String(x == null ? '' : x).slice(0, 8));
-      }
-      if ('colors' in p) {
-        if (!validColors(p.colors)) return bad(400, '팀 색이 올바르지 않아요.');
-        s.colors = p.colors.slice();
       }
       if ('quarters' in p) {
         if (!isInt(p.quarters, 1, 6)) return bad(400, '쿼터 수가 올바르지 않아요.');
