@@ -106,6 +106,10 @@ select{width:auto;min-width:96px}
 .teams{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .team{display:grid;gap:8px;justify-items:center;text-align:center;padding:14px 10px;border-radius:8px;background:var(--bg);border:2px solid transparent;min-width:0}
 .team.first{border-color:var(--hot)}
+.dot{display:inline-block;width:.7em;height:.7em;border-radius:50%;margin-right:.35em;vertical-align:baseline}
+.swatches{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.sw{width:28px;height:28px;border-radius:50%;border:2px solid var(--line);padding:0;min-height:0;cursor:pointer}
+.sw[aria-pressed="true"]{border-color:var(--ink);box-shadow:0 0 0 2px var(--bg) inset}
 .tname{font-weight:700;font-size:1.15rem;overflow-wrap:anywhere}
 .pill{display:inline-block;padding:2px 12px;border-radius:999px;font-size:.78rem;font-weight:700;border:1px solid var(--line);color:var(--muted)}
 .pill.first{background:var(--hot);border-color:var(--hot);color:var(--hot-ink)}
@@ -147,6 +151,9 @@ td.empty{color:var(--line)}
 (function(){
   var PAIRS=[[0,1],[0,2],[1,2]];
   var DEF=['1팀','2팀','3팀'];
+  var PAL=['#2563EB','#E11D48','#16A34A','#F59E0B','#7C3AED','#0891B2','#EA580C','#475569'];
+  var PALN=['파랑','빨강','초록','노랑','보라','청록','주황','회색'];
+  function colOf(i){var c=(S&&S.colors&&S.colors[i]);return PAL[(c>=0&&c<PAL.length)?c:i]||PAL[i];}
   var root=document.getElementById('app');
 
   var m=location.pathname.match(/^\/r\/([A-Za-z0-9]{4,8})\/?$/);
@@ -162,7 +169,7 @@ td.empty{color:var(--line)}
   function $(s){return document.querySelector(s);}
   function esc(t){return String(t).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function dn(i){return String((S&&S.names[i])||'').trim()||DEF[i];}
-  function nm(i){return '<span data-nm="'+i+'">'+esc(dn(i))+'</span>';}
+  function nm(i){return '<i class="dot" style="background:'+colOf(i)+'"></i>'+'<span data-nm="'+i+'">'+esc(dn(i))+'</span>';}
   function vs(p){return nm(PAIRS[p][0])+' <span class="vs">vs</span> '+nm(PAIRS[p][1]);}
   function total(){return S.quarters*3;}
   function isRO(){return VIEW_ONLY;}
@@ -192,6 +199,8 @@ td.empty{color:var(--line)}
   }
   function accept(st){
     if(!okState(st)) return;
+    if(!(st.logo>0)) st.logo=0;
+    if(!Array.isArray(st.colors)||st.colors.length!==3) st.colors=[0,1,2];
     if(!Array.isArray(st.left)||st.left.length!==3) st.left=[0,0,1]; // 예전 방에는 코트 위치가 없어서 기본값(번호 낮은 팀이 왼쪽)을 써요
     if(S&&st.v<S.v) return;
     var changed=(!S||st.v!==S.v||phase!=='room');
@@ -275,7 +284,7 @@ td.empty{color:var(--line)}
         ? '<div class="row"><span class="warn">처음부터 다시 할까요?</span><button class="btn danger" data-act="reset-yes">새로 시작</button><button class="btn ghost" data-act="reset-no">취소</button></div>'
         : '<button class="btn ghost" data-act="reset">새 게임</button>';
     }
-    return '<div class="top"><div><h1>쿼터 점수판</h1><p class="sub">3팀 대결 진행 도우미</p>'+(showStatus?statusHtml():'')+'</div>'+right+'</div><p class="toast" id="toast" role="status"></p>';
+    return '<div class="top"><div><h1>'+(S&&S.logo>0?'<img class="logo" src="/logo/'+CODE+'.jpg?v='+S.logo+'" width="28" height="28" alt="" style="vertical-align:-6px;margin-right:8px;border-radius:6px">':'<svg class="logo" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true" style="vertical-align:-5px;margin-right:8px"><circle cx="16" cy="16" r="14" fill="#FF8A4C" stroke="#1B2A5C" stroke-width="2"/><path d="M16 2V30M2 16H30" stroke="#1B2A5C" stroke-width="2"/><path d="M7 6C12 11 12 21 7 26M25 6C20 11 20 21 25 26" fill="none" stroke="#1B2A5C" stroke-width="2"/></svg>')+'쿼터 점수판</h1><p class="sub">3팀 대결 진행 도우미</p>'+(showStatus?statusHtml():'')+'</div>'+right+'</div><p class="toast" id="toast" role="status"></p>';
   }
 
   function landingView(){
@@ -300,7 +309,10 @@ td.empty{color:var(--line)}
     return '<section class="panel"><div class="rowend"><div><div class="eyebrow">방 코드</div><div class="code">'+esc(CODE)+'</div></div>'+
       '<div class="row"><button class="btn" data-act="copy-link">링크 복사</button><button class="btn" data-act="copy-view">보기 전용 링크 복사</button></div></div>'+box+
       '<p class="note" id="cmsg" aria-live="polite">'+(esc(ui.copyMsg)||'링크를 받은 사람은 로그인 없이 같이 입력할 수 있어요. 보기 전용 링크는 입력창만 숨겨 주는 편의 기능이에요.')+'</p>'+
-      '<p class="note">폰 브라우저 메뉴의 "홈 화면에 추가"를 누르면 앱처럼 설치돼요. 아이콘을 누르면 이 방이 바로 열려요.</p></section>';
+      '<div class="rowend" style="margin-top:8px"><div><span class="lbl">앱 로고</span><p class="note" style="margin-top:2px">'+(S&&S.logo>0?'우리 모임 로고를 쓰는 중이에요.':'기본 로고를 쓰는 중이에요.')+' 사진을 고르면 가운데를 정사각형으로 잘라 써요.</p></div>'+
+      '<div class="row"><button class="btn" data-act="logo-pick">로고 올리기</button>'+(S&&S.logo>0?'<button class="btn ghost" data-act="logo-clear">기본으로</button>':'')+'</div></div>'+
+      '<input type="file" id="logofile" accept="image/*" hidden>'+
+      '<p class="note">폰 브라우저 메뉴의 "홈 화면에 추가"를 누르면 앱처럼 설치돼요. 아이콘을 누르면 이 방이 바로 열려요. 로고를 바꾸면 앱은 지웠다가 다시 설치해야 새 로고로 보여요.</p></section>';
   }
 
   function setupView(){
@@ -329,6 +341,7 @@ td.empty{color:var(--line)}
     return '<section class="panel">'+
       '<div><div class="eyebrow">게임 설정</div><p class="note" style="margin-top:6px">팀 이름과 경기 순서, 1쿼터 선공, 1쿼터에 코트 왼쪽에 서는 팀을 정하면 바로 시작해요. 같은 두 팀이 다시 붙을 때마다 선공이 바뀌고, 3쿼터부터는 코트 체인지로 왼쪽과 오른쪽이 바뀌어요. 점수는 왼쪽 팀 점수를 먼저 입력해요. 설정은 같은 방에 들어온 모든 사람에게 바로 보여요.</p></div>'+
       '<div class="field"><span class="lbl">팀 이름</span><div class="names">'+names+'</div></div>'+
+      '<div class="field"><span class="lbl">팀 색</span>'+[0,1,2].map(function(i){return '<div class="rowend" style="justify-content:flex-start;gap:10px;margin-top:6px"><span style="min-width:5em">'+nm(i)+'</span><span class="swatches" role="group" aria-label="'+(i+1)+'번 팀 색">'+PAL.map(function(c,ci){return '<button class="sw" data-act="color" data-t="'+i+'" data-c="'+ci+'" aria-pressed="'+(((S.colors&&S.colors[i])||0)===ci)+'" aria-label="'+PALN[ci]+'" style="background:'+c+'"></button>';}).join('')+'</span></div>';}).join('')+'</div>'+
       '<div class="field"><label class="lbl" for="qn">쿼터 수</label><div><select id="qn">'+qopts+'</select></div></div>'+
       '<div class="field"><span class="lbl">경기 순서 (한 쿼터 안에서 위에서부터 진행)</span><ol class="order">'+rows+'</ol></div>'+
       '<button class="btn primary big" data-act="start">시작하기</button>'+
@@ -373,7 +386,7 @@ td.empty{color:var(--line)}
       var field=ro?'':
         '<span class="lbl">이번 쿼터 종료 점수</span>'+
         '<input class="score" id="'+(k?'sb':'sa')+'" inputmode="numeric" autocomplete="off" maxlength="'+(k?4:12)+'" value="'+esc(useDraft?(k?draft.b:draft.a):'')+'" aria-label="'+esc(dn(t))+' 이번 쿼터 종료 점수">';
-      return '<div class="team'+(first?' first':'')+'">'+
+      return '<div class="team'+(first?' first':'')+'" style="border-top:5px solid '+colOf(t)+'">'+
         '<span class="lbl">'+(k?'오른쪽':'왼쪽')+'</span>'+
         '<div class="tname">'+nm(t)+'</div>'+
         '<span class="pill'+(first?' first':'')+'">'+(first?'선공':'후공')+'</span>'+
@@ -558,7 +571,10 @@ td.empty{color:var(--line)}
     if(a==='copy-view'){copyText(roomUrl(true),'보기 전용 링크를 복사했어요.');return;}
     if(a==='copy-result'){copyText(resultText(),'결과를 복사했어요.');return;}
     if(isRO()) return;
+    if(a==='logo-pick'){var lf=$('#logofile'); if(lf) lf.click(); return;}
+    if(a==='logo-clear'){ post('/logo',{data:null}).then(function(r){ if(r&&r.j&&r.j.state) accept(r.j.state); else flash('처리하지 못했어요.'); }); return; }
     if(a==='start'){ focusNext=true; ui.editing=null; draft={key:'',a:'',b:'',e:null}; act({type:'start'}); }
+    else if(a==='color'){var cl=S.colors.slice(); cl[+t.dataset.t]=+t.dataset.c; act({type:'config',patch:{colors:cl}});}
     else if(a==='first'){var f=S.first.slice(); f[+t.dataset.p]=+t.dataset.t; act({type:'config',patch:{first:f}});}
     else if(a==='left'){var lf=S.left.slice(); lf[+t.dataset.p]=+t.dataset.t; act({type:'config',patch:{left:lf}});}
     else if(a==='up'||a==='down'){
@@ -605,7 +621,42 @@ td.empty{color:var(--line)}
       draft.e={i:ui.editing,a:ea?ea.value:'',b:eb?eb.value:''};
     }
   });
+  function makeLogo(file){
+    return new Promise(function(resolve,reject){
+      var img=new Image(), rd=new FileReader();
+      rd.onerror=function(){reject(new Error('read'));};
+      rd.onload=function(){ img.src=String(rd.result); };
+      img.onload=function(){
+        try{
+          var n=Math.min(img.naturalWidth,img.naturalHeight); if(!n) throw new Error('size');
+          var c=document.createElement('canvas'); c.width=c.height=512;
+          var g=c.getContext('2d'); g.fillStyle='#fff'; g.fillRect(0,0,512,512);
+          g.drawImage(img,(img.naturalWidth-n)/2,(img.naturalHeight-n)/2,n,n,0,0,512,512);
+          var q=0.88;
+          (function tryQ(){
+            c.toBlob(function(b){
+              if(!b){reject(new Error('blob'));return;}
+              if(b.size>140*1024&&q>0.4){q-=0.12;tryQ();return;}
+              var fr=new FileReader(); fr.onload=function(){resolve(String(fr.result).split(',')[1]);}; fr.onerror=reject; fr.readAsDataURL(b);
+            },'image/jpeg',q);
+          })();
+        }catch(e){reject(e);}
+      };
+      img.onerror=function(){reject(new Error('img'));};
+      rd.readAsDataURL(file);
+    });
+  }
   root.addEventListener('change',function(e){
+    if(e.target.id==='logofile'&&S&&!isRO()){
+      var f=e.target.files&&e.target.files[0]; if(!f) return;
+      flash('로고를 올리는 중이에요…');
+      makeLogo(f).then(function(b64){ return post('/logo',{data:b64}); }).then(function(r){
+        if(r&&r.j&&r.j.state){ accept(r.j.state); flash('로고를 바꿨어요.'); }
+        else flash((r&&r.j&&r.j.error)||'로고를 올리지 못했어요.');
+      }).catch(function(){ flash('이 사진은 쓸 수 없어요. 다른 사진으로 해 보세요.'); });
+      e.target.value='';
+      return;
+    }
     if(e.target.id==='qn'&&S&&!isRO()){ act({type:'config',patch:{quarters:+e.target.value}}); }
   });
   root.addEventListener('keydown',function(e){

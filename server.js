@@ -15,6 +15,7 @@ const MAX_ROOMS = 1000;
 const MAX_CLIENTS_PER_ROOM = 300;
 const ROOM_TTL_MS = 180 * 24 * 60 * 60 * 1000;
 const MAX_BODY = 8 * 1024;
+const MAX_LOGO = 150 * 1024; // 로고 이미지(JPEG) 최대 크기
 const POSTS_PER_MINUTE = 120;
 
 const PAIRS = [[0, 1], [0, 2], [1, 2]];
@@ -34,7 +35,7 @@ const STATIC = {
 };
 
 // 방마다 시작 주소가 다른 설치 설정. 홈 화면 아이콘을 누르면 그 방이 바로 열려요.
-function manifestFor(code, view) {
+function manifestFor(code, view, logoV) {
   const start = code ? '/r/' + code + (view ? '?view=1' : '') : '/';
   return {
     id: start,
@@ -48,10 +49,15 @@ function manifestFor(code, view) {
     orientation: 'portrait',
     background_color: '#EDF0F3',
     theme_color: '#1D4ED8',
-    icons: [
-      { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
-      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
-    ],
+    icons: logoV
+      ? [
+        { src: '/logo/' + code + '.jpg?v=' + logoV, sizes: '192x192', type: 'image/jpeg', purpose: 'any' },
+        { src: '/logo/' + code + '.jpg?v=' + logoV, sizes: '512x512', type: 'image/jpeg', purpose: 'any' },
+      ]
+      : [
+        { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+        { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+      ],
   };
 }
 
@@ -65,8 +71,11 @@ function validFirst(f) { return Array.isArray(f) && f.length === 3 && f.every((t
 
 function freshState() {
   // first: 1쿼터 선공 팀, left: 1쿼터에 코트 왼쪽에 있는 팀 (둘 다 경기 순서 0,1,2 = 1vs2, 1vs3, 2vs3 기준)
-  return { names: DEF_NAMES.slice(), quarters: 4, order: [0, 1, 2], first: [0, 0, 1], left: [0, 0, 1], started: false, scores: [], gen: 0, v: 1, updatedAt: Date.now() };
+  return { names: DEF_NAMES.slice(), quarters: 4, order: [0, 1, 2], first: [0, 0, 1], left: [0, 0, 1], colors: [0, 1, 2], logo: 0, started: false, scores: [], gen: 0, v: 1, updatedAt: Date.now() };
 }
+
+const COLOR_COUNT = 8;
+function validColors(c) { return Array.isArray(c) && c.length === 3 && c.every((x) => Number.isInteger(x) && x >= 0 && x < COLOR_COUNT); }
 
 // 파일이나 클라이언트에서 온 값은 믿지 않고 항상 이 함수로 걸러요.
 function sanitize(o) {
@@ -77,6 +86,7 @@ function sanitize(o) {
   if (validOrder(o.order)) s.order = o.order.slice();
   if (validFirst(o.first)) s.first = o.first.slice();
   if (validFirst(o.left)) s.left = o.left.slice(); // 예전 방에는 없는 값이라 없으면 기본값을 써요
+  if (validColors(o.colors)) s.colors = o.colors.slice();
   s.started = !!o.started;
   if (Array.isArray(o.scores)) {
     for (const p of o.scores) {
@@ -105,6 +115,10 @@ function apply(s, a) {
       if ('names' in p) {
         if (!Array.isArray(p.names) || p.names.length !== 3) return bad(400, '팀 이름이 올바르지 않아요.');
         s.names = p.names.map((x) => String(x == null ? '' : x).slice(0, 8));
+      }
+      if ('colors' in p) {
+        if (!validColors(p.colors)) return bad(400, '팀 색이 올바르지 않아요.');
+        s.colors = p.colors.slice();
       }
       if ('quarters' in p) {
         if (!isInt(p.quarters, 1, 6)) return bad(400, '쿼터 수가 올바르지 않아요.');
@@ -171,6 +185,15 @@ function prune() {
   }
 }
 
+// 올라온 로고가 정말 크기 제한 안의 JPEG인지 확인해요.
+function decodeLogo(b64) {
+  if (typeof b64 !== 'string' || b64.length > MAX_LOGO * 1.4) return null;
+  const buf = Buffer.from(b64, 'base64');
+  if (buf.length < 200 || buf.length > MAX_LOGO) return null;
+  if (!(buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff && buf[buf.length - 2] === 0xff && buf[buf.length - 1] === 0xd9)) return null;
+  return buf;
+}
+
 function newCode() {
   for (let t = 0; t < 30; t++) {
     let c = '';
@@ -200,7 +223,7 @@ function saveNow() {
   try {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     const o = {};
-    for (const [c, r] of rooms) o[c] = r.state;
+    for (const [c, r] of rooms) o[c] = r.logo ? Object.assign({}, r.state, { _logo: r.logo.toString('base64') }) : r.state;
     fs.writeFileSync(DATA_FILE + '.tmp', JSON.stringify(o));
     fs.renameSync(DATA_FILE + '.tmp', DATA_FILE);
   } catch (e) { console.error('저장하지 못했어요:', e.message); }
@@ -214,7 +237,12 @@ function loadRooms() {
   try {
     const o = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
     for (const code of Object.keys(o)) {
-      if (CODE_RE.test(code) && rooms.size < MAX_ROOMS) rooms.set(code, { state: sanitize(o[code]), clients: new Set(), seen: Date.now() });
+      if (CODE_RE.test(code) && rooms.size < MAX_ROOMS) {
+        const room = { state: sanitize(o[code]), clients: new Set(), seen: Date.now() };
+        const lg = o[code] && typeof o[code]._logo === 'string' ? decodeLogo(o[code]._logo) : null;
+        if (lg) { room.logo = lg; room.state.logo = isInt(o[code].logo, 1, 1e9) ? o[code].logo : 1; }
+        rooms.set(code, room);
+      }
     }
     console.log('저장된 방 ' + rooms.size + '개를 불러왔어요.');
   } catch (e) { /* 파일이 없으면 새로 시작해요 */ }
@@ -230,10 +258,17 @@ function sendJson(res, status, obj) {
 }
 
 function sendIndex(res, code, view) {
+  const lr = code ? rooms.get(code) : null;
+  const logoV = lr && lr.logo ? lr.state.logo : 0;
   fs.readFile(INDEX_FILE, 'utf8', (err, html) => {
     if (err) { res.writeHead(500, SEC); res.end('index.html을 찾을 수 없어요.'); return; }
     // 방 주소로 들어오면, 설치 설정도 그 방용으로 바꿔서 내려줘요.
     if (code) html = html.replace('href="/manifest.webmanifest"', 'href="/manifest.webmanifest?r=' + code + (view ? '&amp;v=1' : '') + '"');
+    if (logoV) {
+      const u = '/logo/' + code + '.jpg?v=' + logoV;
+      html = html.replace('<link rel="icon" type="image/png" href="/icon-192.png">', '<link rel="icon" type="image/jpeg" href="' + u + '">')
+        .replace('<link rel="apple-touch-icon" href="/apple-touch-icon.png">', '<link rel="apple-touch-icon" href="' + u + '">');
+    }
     res.writeHead(200, Object.assign({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'Content-Security-Policy': CSP }, SEC));
     res.end(html);
   });
@@ -247,13 +282,14 @@ function sendStatic(res, item) {
   });
 }
 
-function readJson(req) {
+function readJson(req, limit) {
+  const max = limit || MAX_BODY;
   return new Promise((resolve, reject) => {
     let size = 0; let tooBig = false; const chunks = [];
     req.on('data', (c) => {
       if (tooBig) return;
       size += c.length;
-      if (size > MAX_BODY) { tooBig = true; chunks.length = 0; reject(Object.assign(new Error('too large'), { status: 413 })); return; }
+      if (size > max) { tooBig = true; chunks.length = 0; reject(Object.assign(new Error('too large'), { status: 413 })); return; }
       chunks.push(c);
     });
     req.on('end', () => {
@@ -312,9 +348,18 @@ const server = http.createServer(async (req, res) => {
     }
     if (method === 'GET' && url.pathname === '/manifest.webmanifest') {
       const rc = String(url.searchParams.get('r') || '').toUpperCase();
-      const body = JSON.stringify(manifestFor(CODE_RE.test(rc) ? rc : null, url.searchParams.get('v') === '1'));
+      const mr = CODE_RE.test(rc) ? rooms.get(rc) : null;
+      const body = JSON.stringify(manifestFor(CODE_RE.test(rc) ? rc : null, url.searchParams.get('v') === '1', mr && mr.logo ? mr.state.logo : 0));
       res.writeHead(200, Object.assign({ 'Content-Type': 'application/manifest+json; charset=utf-8', 'Cache-Control': 'no-cache' }, SEC));
       res.end(body);
+      return;
+    }
+    if (method === 'GET' && parts[0] === 'logo' && parts.length === 2) {
+      const lc = String(parts[1]).replace(/\.jpg$/i, '').toUpperCase();
+      const lroom = CODE_RE.test(lc) ? rooms.get(lc) : null;
+      if (!lroom || !lroom.logo) { res.writeHead(404, SEC); res.end('Not found'); return; }
+      res.writeHead(200, Object.assign({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=31536000, immutable' }, SEC));
+      res.end(lroom.logo);
       return;
     }
     if (method === 'GET' && Object.prototype.hasOwnProperty.call(STATIC, url.pathname)) { sendStatic(res, STATIC[url.pathname]); return; }
@@ -346,6 +391,26 @@ const server = http.createServer(async (req, res) => {
         if (!room) { sendJson(res, 404, { error: '방을 찾을 수 없어요.' }); return; }
         room.seen = Date.now();
         openStream(req, res, room);
+        return;
+      }
+      if (parts.length === 4 && method === 'POST' && sub === 'logo') {
+        if (limited(req)) { sendJson(res, 429, { error: '요청이 너무 많아요. 잠시 뒤에 다시 시도해 주세요.' }); return; }
+        let body;
+        try { body = await readJson(req, Math.ceil(MAX_LOGO * 1.4) + 1024); }
+        catch (e) { sendJson(res, e.status || 400, { error: '이미지가 너무 크거나 읽을 수 없어요.' }); return; }
+        if (!room) { sendJson(res, 404, { error: '방을 찾을 수 없어요.' }); return; }
+        const next = JSON.parse(JSON.stringify(room.state));
+        if (body && body.data === null) { room.logo = null; next.logo = 0; }
+        else {
+          const buf = decodeLogo(body && body.data);
+          if (!buf) { sendJson(res, 400, { error: '로고 이미지를 쓸 수 없어요. 다른 사진으로 해 보세요.' }); return; }
+          room.logo = buf; next.logo = (room.state.logo || 0) + 1;
+        }
+        room.seen = Date.now();
+        next.v = room.state.v + 1; next.updatedAt = Date.now();
+        room.state = next;
+        broadcast(room); scheduleSave();
+        sendJson(res, 200, { state: next });
         return;
       }
       if (parts.length === 4 && method === 'POST' && (sub === 'action' || sub === 'restore')) {
