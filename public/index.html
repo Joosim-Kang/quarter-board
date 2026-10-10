@@ -182,7 +182,7 @@ td.empty{color:var(--line)}
   function lastRoom(){
     try{
       var o=JSON.parse(localStorage.getItem('qb-last-room')||'null');
-      if(o&&/^[A-Z0-9]{4,8}$/.test(o.code)&&Date.now()-o.t<48*3600*1000) return o;
+      if(o&&/^[A-Z0-9]{4,8}$/.test(o.code)&&Date.now()-o.t<180*24*3600*1000) return o;
     }catch(e){}
     return null;
   }

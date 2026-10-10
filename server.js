@@ -13,7 +13,7 @@ const INDEX_FILE = path.join(__dirname, 'public', 'index.html');
 
 const MAX_ROOMS = 1000;
 const MAX_CLIENTS_PER_ROOM = 300;
-const ROOM_TTL_MS = 48 * 60 * 60 * 1000;
+const ROOM_TTL_MS = 180 * 24 * 60 * 60 * 1000;
 const MAX_BODY = 8 * 1024;
 const POSTS_PER_MINUTE = 120;
 
