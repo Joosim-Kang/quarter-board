@@ -1,0 +1,13 @@
+{
+  "name": "quarter-board",
+  "version": "1.0.0",
+  "description": "3팀 쿼터 점수판: 로그인 없이 여럿이 같이 보고 입력하는 실시간 점수판",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
