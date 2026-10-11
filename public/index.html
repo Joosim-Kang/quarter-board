@@ -106,6 +106,7 @@ select{width:auto;min-width:96px}
 .teams{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .team{display:grid;gap:8px;justify-items:center;text-align:center;padding:10px 8px;border-radius:8px;background:var(--bg);border:2px solid transparent;min-width:0}
 .team.first{border-color:var(--hot)}
+.helpbtn{min-height:32px;padding:0 10px;font-size:.8rem}
 .slim{padding-block:10px}
 .srow{display:flex;align-items:baseline;gap:10px}
 .code.sm{font-size:1.5rem}
@@ -172,7 +173,7 @@ td.empty{color:var(--line)}
   var S=null;            // 서버가 알려 준 최신 상태
   var phase=CODE?'loading':'landing'; // loading | landing | room | missing | error
   var connected=false, es=null, sending=false, focusNext=false, nameTimer=null, toastTimer=null;
-  var ui={editing:null,resetConfirm:false,copyMsg:'',linkText:'',showCopyBox:false};
+  var ui={setupHelp:false,pinOpen:false,pinVal:'',pinErr:'',editing:null,resetConfirm:false,copyMsg:'',linkText:'',showCopyBox:false};
   var draft={key:'',a:'',b:'',e:null};
 
   function $(s){return document.querySelector(s);}
@@ -181,7 +182,12 @@ td.empty{color:var(--line)}
   function nm(i){return '<span data-nm="'+i+'">'+esc(dn(i))+'</span>';}
   function vs(p){return nm(PAIRS[p][0])+' <span class="vs">vs</span> '+nm(PAIRS[p][1]);}
   function total(){return S.quarters*3;}
-  function isRO(){return VIEW_ONLY;}
+  // 입력 비밀번호: 맞게 넣으면 서버가 이 기기용 입력권(토큰)을 줘요. 이 기기에만 저장돼요.
+  function getToken(){ try{return localStorage.getItem('qb-token-'+CODE)||'';}catch(e){return '';} }
+  function setToken(t){ try{localStorage.setItem('qb-token-'+CODE,t);}catch(e){} }
+  function clearToken(){ try{localStorage.removeItem('qb-token-'+CODE);}catch(e){} }
+  function isRO(){return VIEW_ONLY||!!(S&&S.locked&&!getToken());}
+  var FIXED=[];
   function stepKey(){return S.gen+':'+S.scores.length;}
   function flash(msg){
     var t=$('#toast'); if(!t) return;
@@ -197,7 +203,7 @@ td.empty{color:var(--line)}
   function clearLogoLocal(){ try{localStorage.removeItem('qb-logo-'+CODE);}catch(e){} }
   var logoFetching=0;
   function syncLogoLocal(){
-    if(!S||!CODE) return;
+    if(!S||!CODE||S.pristine) return;
     if(!(S.logo>0)){ clearLogoLocal(); return; }
     var cur=getLogoLocal(); if((cur&&cur.ver===S.logo)||logoFetching===S.logo) return;
     logoFetching=S.logo; var ver=S.logo;
@@ -222,6 +228,19 @@ td.empty{color:var(--line)}
   function okState(st){
     return st&&typeof st==='object'&&Array.isArray(st.names)&&Array.isArray(st.scores)&&Array.isArray(st.order)&&Array.isArray(st.first)&&typeof st.v==='number';
   }
+  function tryUnlock(){
+    var el=$('#pin'), pin=el?el.value.trim():ui.pinVal.trim();
+    if(!pin){ ui.pinErr='비밀번호를 넣어 주세요.'; var e0=$('#pinerr'); if(e0) e0.textContent=ui.pinErr; return; }
+    fetch('/api/rooms/'+CODE+'/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin})})
+      .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {ok:r.ok,j:j};});})
+      .then(function(res){
+        if(res.ok&&res.j&&res.j.token){
+          setToken(res.j.token); ui.pinOpen=false; ui.pinVal=''; ui.pinErr=''; render(); flash('입력할 수 있어요.'); restorePristine();
+        }else{
+          ui.pinErr=(res.j&&res.j.error)||'확인하지 못했어요.'; var e1=$('#pinerr'); if(e1) e1.textContent=ui.pinErr;
+        }
+      }).catch(function(){ ui.pinErr='서버에 연결하지 못했어요.'; var e2=$('#pinerr'); if(e2) e2.textContent=ui.pinErr; });
+  }
   function accept(st){
     if(!okState(st)) return;
     if(!(st.logo>0)) st.logo=0;
@@ -230,13 +249,18 @@ td.empty{color:var(--line)}
     var changed=(!S||st.v!==S.v||phase!=='room');
     // 내가 점수를 치던 경기를 다른 사람이 먼저 입력해서 화면이 넘어가면, 숫자가 사라진 이유를 알려 줘요.
     var lostDraft=!!(S&&!sending&&draft.key===stepKey()&&(draft.a||draft.b)&&st.gen===S.gen&&st.scores.length>S.scores.length);
-    S=st; phase='room'; saveLocal(); saveLastRoom(); syncLogoLocal();
+    var keepLocal=false;
+    if(st.pristine){ var lc=loadLocal(); keepLocal=!!(lc&&lc.v>st.v); } // 빈 방이면 기기에 남은 점수를 지우지 않아요
+    S=st; phase='room'; if(!keepLocal) saveLocal(); saveLastRoom(); syncLogoLocal();
     if(changed) render();
     if(lostDraft) flash('다른 사람이 이 경기 점수를 먼저 입력해서 다음 경기로 넘어갔어요. 입력하던 숫자는 지워졌어요.');
   }
   function post(path,body){
-    return fetch('/api/rooms/'+CODE+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-      .then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {ok:r.ok,status:r.status,j:j};});})
+    var hd={'Content-Type':'application/json'}, tk=getToken(); if(tk) hd['X-Edit-Token']=tk;
+    return fetch('/api/rooms/'+CODE+path,{method:'POST',headers:hd,body:JSON.stringify(body)})
+      .then(function(r){return r.json().catch(function(){return {};}).then(function(j){
+        if(r.status===401&&j&&j.locked){ clearToken(); ui.pinOpen=true; ui.pinErr=''; if(phase==='room') render(); flash('입력 비밀번호가 바뀌었거나 만료됐어요. 다시 넣어 주세요.'); }
+        return {ok:r.ok,status:r.status,j:j};});})
       .catch(function(){return null;});
   }
   function act(action){
@@ -281,12 +305,24 @@ td.empty{color:var(--line)}
       });
     }else{ phase='missing'; render(); }
   }
+  // 서버가 새로 켜져서 빈 고정 방이 만들어졌다면, 이 기기에 남은 마지막 점수로 되살려요(입력 권한이 있을 때만).
+  function restorePristine(){
+    if(!S||!S.pristine||isRO()) return;
+    var local=loadLocal(); if(!local||!okState(local)||!(local.v>S.v)) return;
+    var lg=getLogoLocal();
+    post('/restore',lg&&local.logo>0?{state:local,logo:lg.b64}:{state:local}).then(function(res){
+      if(res&&res.j&&res.j.state){ accept(res.j.state); if(res.ok) flash('서버가 다시 시작돼서 이 기기에 남은 점수로 방을 되살렸어요.'); }
+    });
+  }
+  function loadFixed(){
+    fetch('/api/rooms/fixed',{cache:'no-store'}).then(function(r){return r.json();}).then(function(l){ if(Array.isArray(l)){FIXED=l; if(phase==='landing') render();} }).catch(function(){});
+  }
   function boot(){
     render();
-    if(!CODE) return;
+    if(!CODE){ loadFixed(); return; }
     fetch('/api/rooms/'+CODE,{cache:'no-store'}).then(function(r){
       if(r.status===404){recover();return;}
-      return r.json().then(function(st){accept(st);connect();});
+      return r.json().then(function(st){accept(st);connect();restorePristine();});
     }).catch(function(){phase='error';render();});
   }
   // 무료 서버가 잠들지 않게, 화면이 열려 있는 동안 몇 분마다 가볍게 한 번 요청해요.
@@ -304,19 +340,22 @@ td.empty{color:var(--line)}
   }
   function head(showStatus){
     var right='';
-    if(S&&S.started&&!isRO()){
+    if(S&&S.locked&&!VIEW_ONLY&&!getToken()){
+      right='<button class="btn primary" data-act="pin-open">입력하기</button>';
+    }else if(S&&S.started&&!isRO()){
       right=ui.resetConfirm
         ? '<div class="row"><span class="warn">처음부터 다시 할까요?</span><button class="btn danger" data-act="reset-yes">새로 시작</button><button class="btn ghost" data-act="reset-no">취소</button></div>'
         : '<button class="btn ghost" data-act="reset">새 게임</button>';
     }
-    return '<div class="top"><div><h1>'+(S&&S.logo>0?'<img class="logo" src="/logo/'+CODE+'.jpg?v='+S.logo+'" width="28" height="28" alt="" style="vertical-align:-6px;margin-right:8px;border-radius:6px">':'<svg class="logo" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true" style="vertical-align:-5px;margin-right:8px"><circle cx="16" cy="16" r="14" fill="#FF8A4C" stroke="#1B2A5C" stroke-width="2"/><path d="M16 2V30M2 16H30" stroke="#1B2A5C" stroke-width="2"/><path d="M7 6C12 11 12 21 7 26M25 6C20 11 20 21 25 26" fill="none" stroke="#1B2A5C" stroke-width="2"/></svg>')+'쿼터 점수판</h1>'+(showStatus?statusHtml():'')+'</div>'+right+'</div><p class="toast" id="toast" role="status"></p>';
+    return '<div class="top"><div><h1>'+(S&&S.logo>0?'<img class="logo" src="/logo/'+CODE+'.jpg?v='+S.logo+'" width="28" height="28" alt="" style="vertical-align:-6px;margin-right:8px;border-radius:6px">':'<svg class="logo" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true" style="vertical-align:-5px;margin-right:8px"><circle cx="16" cy="16" r="14" fill="#FF8A4C" stroke="#1B2A5C" stroke-width="2"/><path d="M16 2V30M2 16H30" stroke="#1B2A5C" stroke-width="2"/><path d="M7 6C12 11 12 21 7 26M25 6C20 11 20 21 25 26" fill="none" stroke="#1B2A5C" stroke-width="2"/></svg>')+((S&&S.title)?esc(S.title):'쿼터 점수판')+'</h1>'+(showStatus?statusHtml():'')+'</div>'+right+'</div>'+(ui.pinOpen&&S&&S.locked&&!getToken()?'<div class="rowend pinrow"><input class="textin" id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="입력 비밀번호" aria-label="입력 비밀번호" value="'+esc(ui.pinVal)+'" style="flex:1;min-width:0"><button class="btn primary" data-act="pin-go">확인</button></div><p class="err" id="pinerr" role="alert">'+esc(ui.pinErr)+'</p>':'')+'<p class="toast" id="toast" role="status"></p>';
   }
 
   function landingView(){
     var lr=lastRoom();
     var recent=lr?'<section class="panel"><div class="rowend"><div><div class="eyebrow">최근에 연 방</div><div class="code" style="font-size:1.8rem">'+esc(lr.code)+'</div></div>'+
       '<button class="btn primary" data-act="open-recent" data-code="'+esc(lr.code)+'" data-view="'+(lr.view?'1':'0')+'">이어서 열기</button></div></section>':'';
-    return recent+'<section class="panel"><div><div class="eyebrow">시작하기</div><h2 style="margin-top:6px">점수판 방 만들기</h2>'+
+    var fixed=FIXED.length?'<section class="panel"><div class="eyebrow">우리 방</div><div class="row" style="margin-top:8px">'+FIXED.map(function(f){return '<a class="btn primary" style="display:inline-flex;align-items:center;text-decoration:none" href="/r/'+esc(f.code)+'">'+esc(f.title)+'</a>';}).join('')+'</div></section>':'';
+    return fixed+recent+'<section class="panel"><div><div class="eyebrow">시작하기</div><h2 style="margin-top:6px">점수판 방 만들기</h2>'+
       '<p class="note" style="margin-top:6px">방을 만들면 링크가 생겨요. 링크를 받은 사람은 로그인 없이 같이 보고 입력할 수 있어요.</p></div>'+
       '<button class="btn primary big" data-act="create">새 게임 만들기</button></section>'+
       '<section class="panel"><div class="eyebrow">이미 만든 방이 있다면</div>'+
@@ -334,11 +373,12 @@ td.empty{color:var(--line)}
     if(!ui.shareOpen) return '<section class="panel slim"><div class="rowend"><div class="srow"><span class="eyebrow">방 코드</span><span class="code sm">'+esc(CODE)+'</span></div>'+
       '<button class="btn" data-act="share-toggle" aria-expanded="false">공유·설정 ▾</button></div></section>';
     return '<section class="panel"><div class="rowend"><div class="srow"><span class="eyebrow">방 코드</span><span class="code sm">'+esc(CODE)+'</span></div><button class="btn ghost" data-act="share-toggle" aria-expanded="true">접기 ▴</button></div>'+
-      '<div class="row"><button class="btn" data-act="copy-link">링크 복사</button><button class="btn" data-act="copy-view">보기 전용 링크 복사</button></div>'+box+
-      '<p class="note" id="cmsg" aria-live="polite">'+(esc(ui.copyMsg)||'링크를 받은 사람은 로그인 없이 같이 입력할 수 있어요. 보기 전용 링크는 입력창만 숨겨 주는 편의 기능이에요.')+'</p>'+
-      '<div class="rowend" style="margin-top:8px"><div><span class="lbl">앱 로고</span><p class="note" style="margin-top:2px">'+(S&&S.logo>0?'우리 모임 로고를 쓰는 중이에요.':'기본 로고를 쓰는 중이에요.')+' 사진을 고르면 가운데를 정사각형으로 잘라 써요.</p></div>'+
+      '<div class="row"><button class="btn" data-act="copy-link">링크 복사</button>'+(S&&S.locked?'':'<button class="btn" data-act="copy-view">보기 전용 링크 복사</button>')+'</div>'+box+
+      '<p class="note" id="cmsg" aria-live="polite">'+(esc(ui.copyMsg)||(S&&S.locked?'링크를 받은 사람은 누구나 볼 수 있고, 입력은 비밀번호를 아는 사람만 할 수 있어요.':'링크를 받은 사람은 로그인 없이 같이 입력할 수 있어요. 보기 전용 링크는 입력창만 숨겨 주는 편의 기능이에요.'))+'</p>'+
+      (isRO()?'':'<div class="rowend" style="margin-top:8px"><div><span class="lbl">앱 로고</span><p class="note" style="margin-top:2px">'+(S&&S.logo>0?'우리 모임 로고를 쓰는 중이에요.':'기본 로고를 쓰는 중이에요.')+' 사진을 고르면 가운데를 정사각형으로 잘라 써요.</p></div>'+
       '<div class="row"><button class="btn" data-act="logo-pick">로고 올리기</button>'+(S&&S.logo>0?'<button class="btn ghost" data-act="logo-clear">기본으로</button>':'')+'</div></div>'+
-      '<input type="file" id="logofile" accept="image/*" hidden>'+
+      '<input type="file" id="logofile" accept="image/*" hidden>')+
+      (S&&S.locked&&getToken()&&!VIEW_ONLY?'<div class="rowend" style="margin-top:8px"><span class="note">이 폰은 입력할 수 있어요.</span><button class="btn ghost" data-act="pin-forget">이 폰 입력 해제</button></div>':'')+
       '<p class="note">폰 브라우저 메뉴의 "홈 화면에 추가"를 누르면 앱처럼 설치돼요. 아이콘을 누르면 이 방이 바로 열려요. 로고를 바꾸면 앱은 지웠다가 다시 설치해야 새 로고로 보여요.</p></section>';
   }
 
@@ -366,7 +406,8 @@ td.empty{color:var(--line)}
         '</span></span></li>';
     }).join('');
     return '<section class="panel">'+
-      '<div><div class="eyebrow">게임 설정</div><p class="note" style="margin-top:6px">팀 이름과 경기 순서, 1쿼터 선공, 1쿼터에 코트 왼쪽에 서는 팀을 정하면 바로 시작해요. 같은 두 팀이 다시 붙을 때마다 선공이 바뀌고, 3쿼터부터는 코트 체인지로 왼쪽과 오른쪽이 바뀌어요. 점수는 왼쪽 팀 점수를 먼저 입력해요. 설정은 같은 방에 들어온 모든 사람에게 바로 보여요.</p></div>'+
+      '<div><div class="rowend"><div class="eyebrow">게임 설정</div><button class="btn ghost helpbtn" data-act="help-toggle" aria-expanded="'+(ui.setupHelp?'true':'false')+'">'+(ui.setupHelp?'설명 접기 ▴':'설명 보기 ▾')+'</button></div>'+
+      (ui.setupHelp?'<p class="note" style="margin-top:6px">팀 이름과 경기 순서, 1쿼터 선공, 1쿼터에 코트 왼쪽에 서는 팀을 정하면 바로 시작해요. 같은 두 팀이 다시 붙을 때마다 선공이 바뀌고, 3쿼터부터는 코트 체인지로 왼쪽과 오른쪽이 바뀌어요. 점수는 왼쪽 팀 점수를 먼저 입력해요. 설정은 같은 방에 들어온 모든 사람에게 바로 보여요.</p>':'')+'</div>'+
       '<div class="field"><span class="lbl">팀 이름</span><div class="names">'+names+'</div></div>'+
       '<div class="field"><label class="lbl" for="qn">쿼터 수</label><div><select id="qn">'+qopts+'</select></div></div>'+
       '<div class="field"><span class="lbl">경기 순서 (한 쿼터 안에서 위에서부터 진행)</span><ol class="order">'+rows+'</ol></div>'+
@@ -420,7 +461,7 @@ td.empty{color:var(--line)}
       '</div>';
     }
     var foot=ro
-      ? '<p class="note">보기 전용이에요. 점수가 들어오면 이 화면이 바로 바뀌어요.</p>'
+      ? '<p class="note">'+((S.locked&&!VIEW_ONLY)?'보는 중이에요. 점수를 입력하려면 위의 "입력하기"를 눌러 비밀번호를 넣어 주세요.':'보기 전용이에요. 점수가 들어오면 이 화면이 바로 바뀌어요.')+'</p>'
       : '<p class="err" id="err" role="alert" hidden></p>'+
         '<div class="actions"><button class="btn primary big" data-act="submit">'+(last?'점수 입력하고 마치기':'점수 입력하고 다음 경기로')+'</button>'+
         '<button class="btn ghost undo3" data-act="undo"'+(step===0?' disabled':'')+' aria-label="직전 입력 취소">직전<br>입력<br>취소</button></div>'+
@@ -510,6 +551,7 @@ td.empty{color:var(--line)}
       }
     }
     root.innerHTML=h;
+    if(S&&S.title) document.title=S.title+' 점수판';
 
     if(phase!=='room') return;
     if(aval!==null){
@@ -596,8 +638,12 @@ td.empty{color:var(--line)}
     if(a==='copy-link'){copyText(roomUrl(false),'링크를 복사했어요.');return;}
     if(a==='copy-view'){copyText(roomUrl(true),'보기 전용 링크를 복사했어요.');return;}
     if(a==='copy-result'){copyText(resultText(),'결과를 복사했어요.');return;}
-    if(isRO()) return;
     if(a==='share-toggle'){ui.shareOpen=!ui.shareOpen; render(); return;}
+    if(a==='help-toggle'){ui.setupHelp=!ui.setupHelp; render(); return;}
+    if(a==='pin-open'){ui.pinOpen=true; ui.pinErr=''; render(); var pi=$('#pin'); if(pi) pi.focus(); return;}
+    if(a==='pin-go'){ tryUnlock(); return; }
+    if(a==='pin-forget'){ clearToken(); ui.pinOpen=false; render(); flash('이 폰의 입력 권한을 해제했어요.'); return; }
+    if(isRO()) return;
     if(a==='logo-pick'){var lf=$('#logofile'); if(lf) lf.click(); return;}
     if(a==='logo-clear'){ post('/logo',{data:null}).then(function(r){ if(r&&r.j&&r.j.state){ clearLogoLocal(); accept(r.j.state);} else flash('처리하지 못했어요.'); }); return; }
     if(a==='start'){ focusNext=true; ui.editing=null; draft={key:'',a:'',b:'',e:null}; act({type:'start'}); }
@@ -622,6 +668,7 @@ td.empty{color:var(--line)}
 
   root.addEventListener('input',function(e){
     var t=e.target;
+    if(t&&t.id==='pin'){ ui.pinVal=t.value; return; }
     if(!S) return;
     if(t.dataset&&t.dataset.name!==undefined){
       var i=+t.dataset.name; S.names[i]=t.value;
@@ -693,6 +740,7 @@ td.empty{color:var(--line)}
     else if(id==='sb'){ e.preventDefault(); submit(); }
     else if(id==='ea'){ e.preventDefault(); var eb=$('#eb'); if(eb) eb.focus(); }
     else if(id==='eb'){ e.preventDefault(); saveEdit(); }
+    else if(id==='pin'){ e.preventDefault(); tryUnlock(); }
     else if(id==='joincode'){ e.preventDefault(); var jb=$('[data-act="join"]'); if(jb) jb.click(); }
   });
 

@@ -18,10 +18,63 @@ const MAX_BODY = 8 * 1024;
 const MAX_LOGO = 150 * 1024; // 로고 이미지(JPEG) 최대 크기
 const POSTS_PER_MINUTE = 120;
 
+// 고정 방. 서버가 켜질 때마다 자동으로 만들어요. 이름 기본값(names)은 여기서 바꿔요(각 8글자 이내).
+// 입력 비밀번호는 코드에 쓰지 않고, Render 환경변수 PIN_방코드(예: PIN_LXWLC)에 넣어요.
+const FIXED_ROOMS = [
+  { code: 'LXWLC', title: '마이클요단', names: ['1팀', '2팀', '3팀'] },
+  { code: '3XHQS', title: '해피바스켓', names: ['A팀', 'B팀', 'C팀'] },
+];
+const TOKEN_DAYS = 90;
 const PAIRS = [[0, 1], [0, 2], [1, 2]];
 const DEF_NAMES = ['1팀', '2팀', '3팀'];
 const CODE_RE = /^[A-Z0-9]{4,8}$/;
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+/* ---------- 입력 비밀번호 ---------- */
+function pinOf(code) { const v = process.env['PIN_' + code]; return v ? String(v).trim() : ''; }
+function isLocked(code) { return !!pinOf(code); }
+function sha(x) { return crypto.createHash('sha256').update(String(x)).digest(); }
+function safeEq(a, b) { return crypto.timingSafeEqual(sha(a), sha(b)); }
+function tokenKey(code) {
+  // 비밀번호를 바꾸면 예전에 받은 입력 권한이 자동으로 모두 무효가 돼요.
+  return sha('qb|' + (process.env.TOKEN_SECRET || process.env.RENDER_SERVICE_ID || 'local') + '|' + code + '|' + pinOf(code));
+}
+function makeToken(code) {
+  const exp = Date.now() + TOKEN_DAYS * 24 * 3600 * 1000;
+  const body = code + '.' + exp;
+  const mac = crypto.createHmac('sha256', tokenKey(code)).update(body).digest('base64url');
+  return body + '.' + mac;
+}
+function tokenOk(code, token) {
+  if (!isLocked(code)) return true;
+  if (typeof token !== 'string' || token.length > 200) return false;
+  const i = token.lastIndexOf('.');
+  if (i < 0) return false;
+  const body = token.slice(0, i); const mac = token.slice(i + 1);
+  const parts = body.split('.');
+  if (parts.length !== 2 || parts[0] !== code || !(Number(parts[1]) > Date.now())) return false;
+  const want = crypto.createHmac('sha256', tokenKey(code)).update(body).digest('base64url');
+  return safeEq(mac, want);
+}
+// 비밀번호 맞히기 시도 제한: 같은 기기(IP)와 같은 방 모두 걸어요.
+const tries = new Map();
+function tooManyTries(key, max) {
+  const now = Date.now(); let t = tries.get(key);
+  if (!t || now > t.reset) { t = { n: 0, reset: now + 10 * 60 * 1000 }; tries.set(key, t); }
+  return t.n >= max;
+}
+function noteTry(key) { const t = tries.get(key); if (t) t.n += 1; }
+setInterval(() => { const now = Date.now(); for (const [k, t] of tries) if (now > t.reset) tries.delete(k); }, 60000).unref();
+function clientIp(req) { return String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown'; }
+function fixedOf(code) { return FIXED_ROOMS.find((f) => f.code === code) || null; }
+// 화면에 보내는 상태: 저장된 상태 + 잠금 여부 + 고정 방 이름(저장되지 않는 값)
+function publicState(code, room) {
+  const o = Object.assign({}, room.state, { locked: isLocked(code) });
+  const f = fixedOf(code);
+  if (f) o.title = f.title;
+  if (room.pristine) o.pristine = true;
+  return o;
+}
 
 const SEC = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
 const CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
@@ -36,11 +89,12 @@ const STATIC = {
 
 // 방마다 시작 주소가 다른 설치 설정. 홈 화면 아이콘을 누르면 그 방이 바로 열려요.
 function manifestFor(code, view, logoV) {
+  const fx = code ? fixedOf(code) : null;
   const start = code ? '/r/' + code + (view ? '?view=1' : '') : '/';
   return {
     id: start,
-    name: '3팀 쿼터 점수판',
-    short_name: '점수판',
+    name: fx ? fx.title + ' 점수판' : '3팀 쿼터 점수판',
+    short_name: fx ? fx.title : '점수판',
     description: '로그인 없이 여럿이 같이 보고 입력하는 3팀 쿼터 점수판',
     lang: 'ko',
     start_url: start,
@@ -166,12 +220,12 @@ function lastActive(room) { return Math.max(room.seen, room.state.updatedAt); }
 function prune() {
   const now = Date.now();
   for (const [code, room] of rooms) {
-    if (room.clients.size === 0 && now - lastActive(room) > ROOM_TTL_MS) rooms.delete(code);
+    if (!room.fixed && room.clients.size === 0 && now - lastActive(room) > ROOM_TTL_MS) rooms.delete(code);
   }
   if (rooms.size >= MAX_ROOMS) {
     let oldest = null;
     for (const [code, room] of rooms) {
-      if (room.clients.size === 0 && (!oldest || lastActive(room) < lastActive(rooms.get(oldest)))) oldest = code;
+      if (!room.fixed && room.clients.size === 0 && (!oldest || lastActive(room) < lastActive(rooms.get(oldest)))) oldest = code;
     }
     if (oldest) rooms.delete(oldest);
   }
@@ -186,6 +240,20 @@ function decodeLogo(b64) {
   return buf;
 }
 
+// 고정 방이 없으면 만들어요(서버가 새로 켜진 직후 등). 빈 방은 pristine으로 표시해서, 기기에 남은 저장본으로 되살릴 수 있게 해요.
+function ensureFixedRooms() {
+  for (const f of FIXED_ROOMS) {
+    let room = rooms.get(f.code);
+    if (!room) {
+      const st = freshState();
+      st.names = f.names.map((x) => String(x).slice(0, 8));
+      room = addRoom(f.code, st);
+      room.pristine = true;
+    }
+    room.fixed = true;
+  }
+}
+
 function newCode() {
   for (let t = 0; t < 30; t++) {
     let c = '';
@@ -196,14 +264,14 @@ function newCode() {
 }
 
 function addRoom(code, state) {
-  const room = { state, clients: new Set(), seen: Date.now() };
+  const room = { code, state, clients: new Set(), seen: Date.now() };
   rooms.set(code, room);
   scheduleSave();
   return room;
 }
 
 function broadcast(room) {
-  const msg = 'data: ' + JSON.stringify(room.state) + '\n\n';
+  const msg = 'data: ' + JSON.stringify(publicState(room.code, room)) + '\n\n';
   for (const res of room.clients) {
     try { res.write(msg); } catch (e) { room.clients.delete(res); }
   }
@@ -230,7 +298,7 @@ function loadRooms() {
     const o = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
     for (const code of Object.keys(o)) {
       if (CODE_RE.test(code) && rooms.size < MAX_ROOMS) {
-        const room = { state: sanitize(o[code]), clients: new Set(), seen: Date.now() };
+        const room = { code, state: sanitize(o[code]), clients: new Set(), seen: Date.now() };
         const lg = o[code] && typeof o[code]._logo === 'string' ? decodeLogo(o[code]._logo) : null;
         if (lg) { room.logo = lg; room.state.logo = isInt(o[code].logo, 1, 1e9) ? o[code].logo : 1; }
         rooms.set(code, room);
@@ -255,6 +323,8 @@ function sendIndex(res, code, view) {
   fs.readFile(INDEX_FILE, 'utf8', (err, html) => {
     if (err) { res.writeHead(500, SEC); res.end('index.html을 찾을 수 없어요.'); return; }
     // 방 주소로 들어오면, 설치 설정도 그 방용으로 바꿔서 내려줘요.
+    const fxi = code ? fixedOf(code) : null;
+    if (fxi) html = html.replace('<title>3팀 쿼터 점수판</title>', '<title>' + fxi.title + ' 점수판</title>');
     if (code) html = html.replace('href="/manifest.webmanifest"', 'href="/manifest.webmanifest?r=' + code + (view ? '&amp;v=1' : '') + '"');
     if (logoV) {
       const u = '/logo/' + code + '.jpg?v=' + logoV;
@@ -314,7 +384,7 @@ function openStream(req, res, room) {
     'X-Accel-Buffering': 'no',
   }, SEC));
   res.write('retry: 3000\n\n');
-  res.write('data: ' + JSON.stringify(room.state) + '\n\n');
+  res.write('data: ' + JSON.stringify(publicState(room.code, room)) + '\n\n');
   room.clients.add(res);
   req.on('close', () => room.clients.delete(res));
 }
@@ -368,6 +438,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      if (parts.length === 3 && parts[2] === 'fixed' && method === 'GET') {
+        sendJson(res, 200, FIXED_ROOMS.map((f) => ({ code: f.code, title: f.title })));
+        return;
+      }
+
       const code = String(parts[2] || '').toUpperCase();
       if (!CODE_RE.test(code)) { sendJson(res, 404, { error: '방 코드가 올바르지 않아요.' }); return; }
       const room = rooms.get(code);
@@ -376,13 +451,37 @@ const server = http.createServer(async (req, res) => {
       if (parts.length <= 4 && method === 'GET' && sub === '') {
         if (!room) { sendJson(res, 404, { error: '방을 찾을 수 없어요.' }); return; }
         room.seen = Date.now();
-        sendJson(res, 200, room.state);
+        sendJson(res, 200, publicState(code, room));
         return;
       }
       if (parts.length === 4 && method === 'GET' && sub === 'events') {
         if (!room) { sendJson(res, 404, { error: '방을 찾을 수 없어요.' }); return; }
         room.seen = Date.now();
         openStream(req, res, room);
+        return;
+      }
+      if (parts.length === 4 && method === 'POST' && sub === 'unlock') {
+        if (!room) { sendJson(res, 404, { error: '방을 찾을 수 없어요.' }); return; }
+        if (!isLocked(code)) { sendJson(res, 200, { token: '', locked: false }); return; }
+        const ipKey = 'ip|' + clientIp(req); const roomKey = 'room|' + code;
+        if (tooManyTries(ipKey, 8) || tooManyTries(roomKey, 40)) { sendJson(res, 429, { error: '비밀번호를 너무 많이 틀렸어요. 10분 뒤에 다시 해 주세요.' }); return; }
+        let body;
+        try { body = await readJson(req); }
+        catch (e) { sendJson(res, e.status || 400, { error: '요청을 읽지 못했어요.' }); return; }
+        const pin = body && typeof body.pin === 'string' ? body.pin.trim() : '';
+        if (!pin || !safeEq(pin, pinOf(code))) {
+          noteTry(ipKey); noteTry(roomKey);
+          sendJson(res, 401, { error: '비밀번호가 맞지 않아요.' });
+          return;
+        }
+        sendJson(res, 200, { token: makeToken(code), locked: true });
+        return;
+      }
+      if (parts.length === 4 && method === 'POST' && (sub === 'logo' || sub === 'action' || sub === 'restore')
+        && !tokenOk(code, String(req.headers['x-edit-token'] || ''))) {
+        // 읽지 않은 요청 본문이 남아 있어도 연결이 막히지 않게 정리해요.
+        req.resume();
+        sendJson(res, 401, { error: '입력 비밀번호가 필요해요.', locked: true });
         return;
       }
       if (parts.length === 4 && method === 'POST' && sub === 'logo') {
@@ -398,11 +497,11 @@ const server = http.createServer(async (req, res) => {
           if (!buf) { sendJson(res, 400, { error: '로고 이미지를 쓸 수 없어요. 다른 사진으로 해 보세요.' }); return; }
           room.logo = buf; next.logo = (room.state.logo || 0) + 1;
         }
-        room.seen = Date.now();
+        room.seen = Date.now(); room.pristine = false;
         next.v = room.state.v + 1; next.updatedAt = Date.now();
         room.state = next;
         broadcast(room); scheduleSave();
-        sendJson(res, 200, { state: next });
+        sendJson(res, 200, { state: publicState(code, room) });
         return;
       }
       if (parts.length === 4 && method === 'POST' && (sub === 'action' || sub === 'restore')) {
@@ -413,15 +512,22 @@ const server = http.createServer(async (req, res) => {
 
         if (sub === 'restore') {
           // 서버가 재시작돼서 방이 사라졌을 때, 접속해 있던 기기가 마지막 점수를 다시 올려 방을 되살려요.
-          if (room) { sendJson(res, 409, { error: '방이 이미 있어요.', state: room.state }); return; }
-          prune();
-          if (rooms.size >= MAX_ROOMS) { sendJson(res, 503, { error: '지금은 방을 복구할 수 없어요.' }); return; }
+          // 고정 방은 서버가 켜질 때 빈 방(pristine)으로 먼저 만들어지므로, 아직 아무도 손대지 않았다면 저장본으로 덮어써도 돼요.
+          if (room && !room.pristine) { sendJson(res, 409, { error: '방이 이미 있어요.', state: publicState(code, room) }); return; }
+          if (!room) {
+            prune();
+            if (rooms.size >= MAX_ROOMS) { sendJson(res, 503, { error: '지금은 방을 복구할 수 없어요.' }); return; }
+          }
           const st = sanitize(body && body.state);
-          st.v = (body && body.state && isInt(body.state.v, 1, 1e9) ? body.state.v : 1) + 1;
+          st.v = Math.max((body && body.state && isInt(body.state.v, 1, 1e9) ? body.state.v : 1), room ? room.state.v : 1) + 1;
           const rl = body && typeof body.logo === 'string' ? decodeLogo(body.logo) : null;
-          const room2 = addRoom(code, st);
+          let room2 = room;
+          if (room2) { room2.state = st; room2.pristine = false; room2.seen = Date.now(); scheduleSave(); }
+          else room2 = addRoom(code, st);
           if (rl) { room2.logo = rl; st.logo = (body.state && isInt(body.state.logo, 0, 1e9) ? body.state.logo : 0) + 1; scheduleSave(); }
-          sendJson(res, 201, { state: st });
+          if (fixedOf(code)) room2.fixed = true;
+          broadcast(room2);
+          sendJson(res, 201, { state: publicState(code, room2) });
           return;
         }
 
@@ -429,13 +535,14 @@ const server = http.createServer(async (req, res) => {
         room.seen = Date.now();
         const next = JSON.parse(JSON.stringify(room.state));
         const err = apply(next, body);
-        if (err) { sendJson(res, err.status, { error: err.error, state: room.state }); return; }
+        if (err) { sendJson(res, err.status, { error: err.error, state: publicState(code, room) }); return; }
+        room.pristine = false;
         next.v = room.state.v + 1;
         next.updatedAt = Date.now();
         room.state = next;
         broadcast(room);
         scheduleSave();
-        sendJson(res, 200, { state: next });
+        sendJson(res, 200, { state: publicState(code, room) });
         return;
       }
     }
@@ -453,7 +560,8 @@ process.on('SIGINT', shutdown);
 
 if (require.main === module) {
   loadRooms();
+  ensureFixedRooms();
   server.listen(PORT, '0.0.0.0', () => console.log('점수판 서버가 켜졌어요: http://localhost:' + PORT));
 }
 
-module.exports = { server, apply, sanitize, freshState };
+module.exports = { server, apply, sanitize, freshState, ensureFixedRooms, rooms };
