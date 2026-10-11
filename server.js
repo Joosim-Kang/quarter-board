@@ -408,7 +408,7 @@ const server = http.createServer(async (req, res) => {
       if (parts.length === 4 && method === 'POST' && (sub === 'action' || sub === 'restore')) {
         if (limited(req)) { sendJson(res, 429, { error: '요청이 너무 많아요. 잠시 뒤에 다시 시도해 주세요.' }); return; }
         let body;
-        try { body = await readJson(req); }
+        try { body = await readJson(req, sub === 'restore' ? Math.ceil(MAX_LOGO * 1.4) + 8192 : undefined); }
         catch (e) { sendJson(res, e.status || 400, { error: '요청을 읽지 못했어요.' }); return; }
 
         if (sub === 'restore') {
@@ -418,7 +418,9 @@ const server = http.createServer(async (req, res) => {
           if (rooms.size >= MAX_ROOMS) { sendJson(res, 503, { error: '지금은 방을 복구할 수 없어요.' }); return; }
           const st = sanitize(body && body.state);
           st.v = (body && body.state && isInt(body.state.v, 1, 1e9) ? body.state.v : 1) + 1;
-          addRoom(code, st);
+          const rl = body && typeof body.logo === 'string' ? decodeLogo(body.logo) : null;
+          const room2 = addRoom(code, st);
+          if (rl) { room2.logo = rl; st.logo = (body.state && isInt(body.state.logo, 0, 1e9) ? body.state.logo : 0) + 1; scheduleSave(); }
           sendJson(res, 201, { state: st });
           return;
         }
